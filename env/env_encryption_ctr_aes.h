@@ -12,6 +12,7 @@
 namespace ROCKSDB_NAMESPACE {
 
 class Stream_cipher;
+class MasterKeyManager;
 // CTRCipherStream implements BlockAccessCipherStream using an
 // Counter operations mode.
 // See https://en.wikipedia.org/wiki/Block_cipher_mode_of_operation
@@ -59,13 +60,6 @@ class CTRAesCipherStream final : public BlockAccessCipherStream {
 // CTR AES encryption provider
 class CTRAesEncryptionProvider : public EncryptionProvider {
  private:
-  static const char* kKeyMagic;
-  static constexpr int KEY_MAGIC_SIZE     = 4;
-  static constexpr int MASTER_KEY_ID_SIZE = 4;
-  static constexpr int S_UUID_SIZE        = 36;
-  static constexpr int CRC_SIZE           = 4;
-  static constexpr int FILE_KEY_SIZE      = 32;
-  static constexpr int IV_SIZE            = 16;
 
  protected:
   // For optimal performance when using direct IO, the prefix length should be a
@@ -73,8 +67,10 @@ class CTRAesEncryptionProvider : public EncryptionProvider {
   // is placed at largest known alignment point for direct io.
   const static size_t defaultPrefixLength = 4096;
 
+  std::shared_ptr<MasterKeyManager> masterKeyManager_;
+
  public:
-  explicit CTRAesEncryptionProvider() {};
+  explicit CTRAesEncryptionProvider();
   virtual ~CTRAesEncryptionProvider() {}
 
   static const char* kCTRAesProviderName;

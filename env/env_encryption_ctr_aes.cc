@@ -1,4 +1,5 @@
 #include "env/env_encryption_ctr_aes.h"
+#include "env/master_key_manager.h"
 #include "rocksdb/stream_cipher.h"
 #include "rocksdb/system_clock.h"
 #include "util/random.h"
@@ -62,9 +63,30 @@ Status CTRAesCipherStream::DecryptBlock(uint64_t blockIndex, char* data, char* s
 }
 
 /******************************************************************************/
+static constexpr char kKeyMagic[]       = "rdbe001";
+
+static constexpr int KEY_MAGIC_SIZE     = strlen(kKeyMagic);
+static constexpr int MASTER_KEY_ID_SIZE = sizeof(uint32_t);
+static constexpr int S_UUID_SIZE        = 36;
+static constexpr int CRC_SIZE           = sizeof(uint32_t);
+static constexpr int FILE_KEY_SIZE      = 32;
+static constexpr int IV_SIZE            = 16;
+
+static constexpr int KEY_MAGIC_OFFSET     = 0;
+static constexpr int MASTER_KEY_ID_OFFSET = KEY_MAGIC_OFFSET + KEY_MAGIC_SIZE;
+static constexpr int S_UUID_OFFSET        = MASTER_KEY_ID_OFFSET + MASTER_KEY_ID_SIZE;
+static constexpr int CRC_OFFSET           = S_UUID_OFFSET + S_UUID_SIZE;
+static constexpr int FILE_KEY_OFFSET      = CRC_OFFSET + CRC_SIZE;
+static constexpr int IV_OFFSET            = FILE_KEY_OFFSET + FILE_KEY_SIZE;
 
 const char* CTRAesEncryptionProvider::kCTRAesProviderName = "CTRAES";
-const char* CTRAesEncryptionProvider::kKeyMagic = "e001";
+
+
+CTRAesEncryptionProvider::CTRAesEncryptionProvider()
+: masterKeyManager_(new MasterKeyManager())  // todo: this should be injected
+{
+
+}
 
 const char* CTRAesEncryptionProvider::Name() const
 {
@@ -88,47 +110,54 @@ Encryption header:
 Status CTRAesEncryptionProvider::CreateNewPrefix(const std::string& fname, char* prefix,
                        size_t prefixLength) const
 {
-  memcpy(prefix, kKeyMagic, KEY_MAGIC_SIZE);
-  // todo: master_key_id
-  // todo: server uuid
-  // skip crc for now
+  memcpy((void*)(&prefix[KEY_MAGIC_OFFSET]), kKeyMagic, KEY_MAGIC_SIZE);
+
+  std::string masterKey;
+  uint32_t masterKeyId = 0;
+
+  masterKeyManager_->GetMostRecentMasterKey(&masterKey, &masterKeyId);
+  // todo: do something like mach_write_to_4
+  // store the master key id
+  memcpy((void*)(&prefix[MASTER_KEY_ID_OFFSET]), &masterKeyId, MASTER_KEY_ID_SIZE);
+
+  // store server uuid
+  std::string serverUuid;
+  masterKeyManager_->GetServerUuid(&serverUuid);
+  memcpy((void*)(&prefix[S_UUID_OFFSET]), serverUuid.data(), S_UUID_SIZE);
 
   // Create & seed rnd.
   // todo: maybe openssl would be better for random numbers?
   Random rnd((uint32_t)SystemClock::Default()->NowMicros());
   // Fill the not clear-text part of the prefix with random values.
-  size_t fileKeyStart = KEY_MAGIC_SIZE + MASTER_KEY_ID_SIZE + S_UUID_SIZE + CRC_SIZE;
-  for (size_t i = fileKeyStart; i < prefixLength; i++) {
+  // file key and IV are generated here as well
+  for (size_t i = FILE_KEY_OFFSET; i < prefixLength; i++) {
     prefix[i] = rnd.Uniform(256) & 0xFF;
   }
-#if 1
-  memset((void*)(&prefix[KEY_MAGIC_SIZE]), 'M', MASTER_KEY_ID_SIZE);
-  memset((void*)(&prefix[KEY_MAGIC_SIZE + MASTER_KEY_ID_SIZE]), 'U', S_UUID_SIZE);
-  memset((void*)(&prefix[fileKeyStart]), 'K', FILE_KEY_SIZE);
-  memset((void*)(&prefix[fileKeyStart + FILE_KEY_SIZE]), 'V', IV_SIZE);
-  memset((void*)(&prefix[fileKeyStart - CRC_SIZE]), 'C', CRC_SIZE);
 
+#if 0
+  memset((void*)(&prefix[FILE_KEY_OFFSET]), 'K', FILE_KEY_SIZE);
+  memset((void*)(&prefix[IV_OFFSET]), 'V', IV_SIZE);
 #endif
 
-  // key & IV have just been generated as the random data above
-//  Slice key = Slice(prefix + fileKeyStart, FILE_KEY_SIZE);
-//  Slice iv =  Slice(prefix + fileKeyStart + FILE_KEY_SIZE, IV_SIZE);
+  // calculate and store CRC of not encrypted file key and IV
+  // todo: skip calculation for now
+  uint32_t crc = 0xABCDABCD;
+  memcpy((void*)(&prefix[CRC_OFFSET]), &crc, CRC_SIZE);
 
-  // todo:
-  // 1. Calculate key,iv CRC
-  // 2. Encrypt key and iv with master key (AES ECB)
-  // 3. Store calculated CRC
+  // encrypt file key and IV with master key
+  unsigned char iv[IV_SIZE] = {0};
+  auto encryptor = Aes_ctr::get_encryptor();
+  encryptor->open((const unsigned char*)masterKey.data(), iv);
+  unsigned char* dataToEncrypt = (unsigned char*)(&prefix[FILE_KEY_OFFSET]);
+  encryptor->encrypt(dataToEncrypt, dataToEncrypt, FILE_KEY_SIZE + IV_SIZE);
+
+
 #if 0
-  CTRCipherStream cipherStream(cipher_, prefixIV.data(), initialCounter);
-  Status status;
-  {
-    PERF_TIMER_GUARD(encrypt_data_nanos);
-    status = cipherStream.Encrypt(0, prefix + (2 * blockSize),
-                                  prefixLength - (2 * blockSize));
-  }
-  if (!status.ok()) {
-    return status;
-  }
+  memset((void*)(&prefix[MASTER_KEY_ID_OFFSET]), 'M', MASTER_KEY_ID_SIZE);
+  memset((void*)(&prefix[S_UUID_OFFSET]), 'U', S_UUID_SIZE);
+  memset((void*)(&prefix[FILE_KEY_OFFSET]), 'K', FILE_KEY_SIZE);
+  memset((void*)(&prefix[IV_OFFSET]), 'V', IV_SIZE);
+  memset((void*)(&prefix[CRC_OFFSET]), 'C', CRC_SIZE);
 #endif
   return Status::OK();
 }
@@ -143,35 +172,41 @@ Status CTRAesEncryptionProvider::CreateCipherStream(
      return Status::OK();
   }
 
-  // todo:
-  // 1. Decrypt key and iv with master key (AES ECB)
-  // 2. Calculate key,iv CRC
-  // 3. validate if CRC is OK
+  Slice masterKeyIdSlice(prefix.data() + MASTER_KEY_ID_OFFSET, MASTER_KEY_ID_SIZE);
+  Slice suuidSlice(prefix.data() + S_UUID_OFFSET, S_UUID_SIZE);
+  uint32_t masterKeyId = 0;
+  memcpy(&masterKeyId, masterKeyIdSlice.data(), masterKeyIdSlice.size());
+  std::string suuid(suuidSlice.data(), suuidSlice.size());
 
-  size_t fileKeyStart = KEY_MAGIC_SIZE + MASTER_KEY_ID_SIZE + S_UUID_SIZE + CRC_SIZE;
+  std::string masterKey;
+  masterKeyManager_->GetMasterKey(masterKeyId, suuid, &masterKey);
 
-  Slice fileKey(prefix.data() + fileKeyStart, FILE_KEY_SIZE);
-  Slice iv(prefix.data() + fileKeyStart + FILE_KEY_SIZE, IV_SIZE);
+  // Decrypt key and iv with master key (AES ECB)
 
-#if 0
-  // Decrypt the encrypted part of the prefix, starting from block 2 (block 0, 1
-  // with initial counter & IV are unencrypted)
-  CTRCipherStream cipherStream(cipher_, iv.data(), initialCounter);
-  Status status;
-  {
-    PERF_TIMER_GUARD(decrypt_data_nanos);
-    status = cipherStream.Decrypt(0, (char*)prefix.data() + (2 * blockSize),
-                                  prefix.size() - (2 * blockSize));
+  unsigned char iv[IV_SIZE] = {0};
+  auto decryptor = Aes_ctr::get_decryptor();
+  decryptor->open((const unsigned char*)masterKey.data(), iv);
+
+  unsigned char dataToDecrypt[FILE_KEY_SIZE + IV_SIZE];
+  memcpy(dataToDecrypt, prefix.data()+FILE_KEY_OFFSET, FILE_KEY_SIZE+IV_SIZE);
+
+  decryptor->decrypt(dataToDecrypt, dataToDecrypt, FILE_KEY_SIZE + IV_SIZE);
+
+  // TODO: Calculate and validate CRC
+  uint32_t crc = 0;
+  memcpy(&crc, prefix.data()+CRC_OFFSET, CRC_SIZE);
+  if(crc != 0xABCDABCD) {
+      fprintf(stderr, "WRONG CRC!\n");
   }
-  if (!status.ok()) {
-    return status;
-  }
-#endif
+
+  Slice fileKey((char*)dataToDecrypt, FILE_KEY_SIZE);
+  Slice fileIV((char*)(dataToDecrypt+FILE_KEY_SIZE), IV_SIZE);
+
   // Create cipher stream
-  return CreateCipherStreamFromPrefix(fileKey, iv, result);
+  return CreateCipherStreamFromPrefix(fileKey, fileIV, result);
 }
 
-Status CTRAesEncryptionProvider::AddCipher(const std::string& descriptor, const char* /*cipher*/,
+Status CTRAesEncryptionProvider::AddCipher(const std::string& /*descriptor*/, const char* /*cipher*/,
                  size_t /*len*/, bool /*for_write*/)
 {
   return Status::OK();
