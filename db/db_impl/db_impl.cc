@@ -4084,9 +4084,20 @@ Status DBImpl::WriteOptionsFile(bool need_mutex_lock,
 
   std::string file_name =
       TempOptionsFileName(GetName(), versions_->NewFileNumber());
+
+// KH: TODO: Here we say that OPTIONS file will be not encrypted.
+// When reading it is expected to be not encrypted.
+// Actually we could encrypt it as well, but reading needs to be fixed.
+// For now it is easier/faster to make it not encrypted.
+#if 1
+  Env *e = rocksdb::Env::Default();
+
+  Status s = PersistRocksDBOptions(db_options, cf_names, cf_opts, file_name,
+                                   e->GetFileSystem().get());
+#else
   Status s = PersistRocksDBOptions(db_options, cf_names, cf_opts, file_name,
                                    fs_.get());
-
+#endif
   if (s.ok()) {
     s = RenameTempFileToOptionsFile(file_name);
   }

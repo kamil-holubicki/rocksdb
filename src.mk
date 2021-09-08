@@ -82,6 +82,8 @@ LIB_SOURCES =                                                   \
   env/env.cc                                                    \
   env/env_chroot.cc                                             \
   env/env_encryption.cc                                         \
+  env/env_encryption_ctr_aes.cc                                 \
+  env/stream_cipher.cc                                          \
   env/env_hdfs.cc                                               \
   env/env_posix.cc                                              \
   env/file_system.cc                                            \

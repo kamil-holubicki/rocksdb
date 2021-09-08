@@ -24,6 +24,10 @@ struct ConfigOptions;
 Env* NewEncryptedEnv(Env* base_env,
                      const std::shared_ptr<EncryptionProvider>& provider);
 
+Env* NewEncryptedEnv(Env* base_env,
+                     const std::shared_ptr<EncryptionProvider>& provider,
+                     bool encryptNewFiles);
+
 // BlockAccessCipherStream is the base class for any cipher stream that
 // supports random access at block level (without requiring data from other
 // blocks). E.g. CTR (Counter operation mode) supports this requirement.
@@ -375,6 +379,8 @@ class EncryptedWritableFile : public FSWritableFile {
   IOStatus Sync(const IOOptions& options, IODebugContext* dbg) override;
 
   IOStatus Close(const IOOptions& options, IODebugContext* dbg) override;
+
+  bool IsSyncThreadSafe() const override;
 };
 
 // A file abstraction for random reading and writing.

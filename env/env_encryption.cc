@@ -11,9 +11,11 @@
 #include <cassert>
 #include <cctype>
 #include <iostream>
+#include <vector>
 
 #include "env/composite_env_wrapper.h"
 #include "env/env_encryption_ctr.h"
+#include "env/env_encryption_ctr_aes.h"
 #include "monitoring/perf_context_imp.h"
 #include "rocksdb/convenience.h"
 #include "rocksdb/io_status.h"
@@ -63,8 +65,11 @@ Status EncryptionProvider::CreateFromString(
   }
   if (id == kCTRProviderName) {
     result->reset(new CTREncryptionProvider());
-  } else if (is_test) {
-    result->reset(new CTREncryptionProvider());
+    if (!is_test) {
+      (*result)->AddCipher(std::string(), kROT13CipherName, 32, true);
+    }
+  } else if (id == CTRAesEncryptionProvider::kCTRAesProviderName) {
+      result->reset(new CTRAesEncryptionProvider());
   } else {
     return Status::NotSupported("Could not find provider ", value);
   }
@@ -384,6 +389,9 @@ IOStatus EncryptedWritableFile::Close(const IOOptions& options,
   return file_->Close(options, dbg);
 }
 
+bool EncryptedWritableFile::IsSyncThreadSafe() const {
+    return file_->IsSyncThreadSafe();
+}
 // A file abstraction for random reading and writing.
 
 // Indicates if the class makes use of direct I/O
@@ -691,13 +699,47 @@ class EncryptedFileSystemImpl : public EncryptedFileSystem {
  public:
   EncryptedFileSystemImpl(const std::shared_ptr<FileSystem>& base,
                           const std::shared_ptr<EncryptionProvider>& provider)
-      : EncryptedFileSystem(base) {
-    provider_ = provider;
+      : EncryptedFileSystem(base)
+      , provider_(provider)
+      , encrypt_new_files_(true) {
+  }
+
+  EncryptedFileSystemImpl(const std::shared_ptr<FileSystem>& base,
+                          const std::shared_ptr<EncryptionProvider>& provider,
+                          bool encryptNewFiles)
+      : EncryptedFileSystem(base)
+      , provider_(provider)
+      , encrypt_new_files_(encryptNewFiles) {
+  }
+
+  IOStatus IsFileEncrypted(const std::string& fname,
+                           bool* result,
+                           IODebugContext* dbg) {
+    rocksdb::EnvOptions soptions;
+    std::unique_ptr<FSSequentialFile> underlying;
+    auto status =
+        FileSystemWrapper::NewSequentialFile(fname, soptions, &underlying, dbg);
+    if (!status.ok()) {
+      return status;
+    }
+    auto encPrefix = provider_->GetMarker();
+    std::vector<char> space;
+    space.reserve(encPrefix.size());
+    Slice fragment;
+    status = underlying->Read(encPrefix.size(), IOOptions(), &fragment, space.data(),
+                   nullptr);
+    if (!status.ok()) {
+      return status;
+    }
+    *result = (encPrefix.compare(0, encPrefix.size(), fragment.data(), fragment.size()) == 0);
+
+    return status_to_io_status(Status::OK());
   }
 
   Status AddCipher(const std::string& descriptor, const char* cipher,
                    size_t len, bool for_write) override {
-    return provider_->AddCipher(descriptor, cipher, len, for_write);
+    provider_->AddCipher(descriptor, cipher, len, for_write);
+    return Status::OK();
   }
 
   // NewSequentialFile opens a file for sequential reading.
@@ -726,6 +768,14 @@ class EncryptedFileSystemImpl : public EncryptedFileSystem {
       *result = std::move(underlying);
       return status;
     }
+
+    bool encrypted = false;
+    IsFileEncrypted(fname, &encrypted, dbg);
+    if(!encrypted) {
+        result->reset(underlying.release());
+        return status;
+    }
+
     // Create cipher stream
     std::unique_ptr<BlockAccessCipherStream> stream;
     size_t prefix_length;
@@ -754,6 +804,14 @@ class EncryptedFileSystemImpl : public EncryptedFileSystem {
     if (!status.ok()) {
       return status;
     }
+
+    bool encrypted = false;
+    IsFileEncrypted(fname, &encrypted, dbg);
+    if(!encrypted) {
+        result->reset(underlying.release());
+        return status;
+    }
+
     std::unique_ptr<BlockAccessCipherStream> stream;
     size_t prefix_length;
     status = CreateRandomReadCipherStream(fname, underlying, options,
@@ -784,6 +842,13 @@ class EncryptedFileSystemImpl : public EncryptedFileSystem {
     if (!status.ok()) {
       return status;
     }
+
+    // file should not be encrypted
+    if(!encrypt_new_files_) {
+      result->reset(underlying.release());
+      return status;
+    }
+
     return CreateWritableEncryptedFile(fname, underlying, options, result, dbg);
   }
 
@@ -802,6 +867,9 @@ class EncryptedFileSystemImpl : public EncryptedFileSystem {
     if (options.use_mmap_writes) {
       return IOStatus::InvalidArgument();
     }
+
+    bool isNewFile = !FileExists(fname, options.io_options, dbg).ok();
+
     // Open file using underlying Env implementation
     std::unique_ptr<FSWritableFile> underlying;
     IOStatus status =
@@ -809,6 +877,24 @@ class EncryptedFileSystemImpl : public EncryptedFileSystem {
     if (!status.ok()) {
       return status;
     }
+
+    // file exists and is not encrypted
+    if (!isNewFile) {
+        bool encrypted = false;
+        IsFileEncrypted(fname, &encrypted, dbg);
+        if(!encrypted) {
+            result->reset(underlying.release());
+            return status;
+        }
+    }
+
+    // file does not exist and is not encrypted
+    if(isNewFile && !encrypt_new_files_) {
+            result->reset(underlying.release());
+            return status;
+    }
+
+    // here we go if we need to create encrypted file (new one, or wrap existing one)
     return CreateWritableEncryptedFile(fname, underlying, options, result, dbg);
   }
 
@@ -829,6 +915,13 @@ class EncryptedFileSystemImpl : public EncryptedFileSystem {
     if (!status.ok()) {
       return status;
     }
+
+    // file should not be encrypted
+    if(!encrypt_new_files_) {
+      result->reset(underlying.release());
+      return status;
+    }
+
     return CreateWritableEncryptedFile(fname, underlying, options, result, dbg);
   }
 
@@ -854,6 +947,24 @@ class EncryptedFileSystemImpl : public EncryptedFileSystem {
     if (!status.ok()) {
       return status;
     }
+
+    // file exists and is unencrypted
+    if (!isNewFile) {
+        bool encrypted = false;
+        IsFileEncrypted(fname, &encrypted, dbg);
+        if(!encrypted) {
+            result->reset(underlying.release());
+            return status;
+        }
+    }
+
+    // file does not exist and it has to be not encrypted
+    if(isNewFile && !encrypt_new_files_) {
+            result->reset(underlying.release());
+            return status;
+    }
+
+    // Here we go if the file is encrypted. The new one or existing one.
     // Create cipher stream
     std::unique_ptr<BlockAccessCipherStream> stream;
     size_t prefix_length = 0;
@@ -905,6 +1016,12 @@ class EncryptedFileSystemImpl : public EncryptedFileSystem {
       //  directories
       // which makes subtraction of prefixLength worrisome since
       // FileAttributes does not identify directories
+      bool encrypted = false;
+      IsFileEncrypted(it->name, &encrypted, dbg);
+      if(!encrypted) {
+        continue;
+      }
+
       EncryptionProvider* provider;
       status = GetReadableProvider(it->name, &provider);
       if (!status.ok()) {
@@ -924,6 +1041,13 @@ class EncryptedFileSystemImpl : public EncryptedFileSystem {
     if (!status.ok() || !(*file_size)) {
       return status;
     }
+
+    bool encrypted = false;
+    IsFileEncrypted(fname, &encrypted, dbg);
+    if(!encrypted) {
+        return status;
+    }
+
     EncryptionProvider* provider;
     status = GetReadableProvider(fname, &provider);
     if (provider != nullptr && status.ok()) {
@@ -936,6 +1060,7 @@ class EncryptedFileSystemImpl : public EncryptedFileSystem {
 
  private:
   std::shared_ptr<EncryptionProvider> provider_;
+  bool encrypt_new_files_;
 };
 }  // namespace
 
@@ -944,12 +1069,27 @@ std::shared_ptr<FileSystem> NewEncryptedFS(
     const std::shared_ptr<EncryptionProvider>& provider) {
   return std::make_shared<EncryptedFileSystemImpl>(base, provider);
 }
+
+std::shared_ptr<FileSystem> NewEncryptedFS(
+    const std::shared_ptr<FileSystem>& base,
+    const std::shared_ptr<EncryptionProvider>& provider,
+    bool encryptNewFiles) {
+  return std::make_shared<EncryptedFileSystemImpl>(base, provider, encryptNewFiles);
+}
+
 // Returns an Env that encrypts data when stored on disk and decrypts data when
 // read from disk.
 Env* NewEncryptedEnv(Env* base_env,
                      const std::shared_ptr<EncryptionProvider>& provider) {
   return new CompositeEnvWrapper(
       base_env, NewEncryptedFS(base_env->GetFileSystem(), provider));
+}
+
+Env* NewEncryptedEnv(Env* base_env,
+                     const std::shared_ptr<EncryptionProvider>& provider,
+                     bool encryptNewFiles) {
+  return new CompositeEnvWrapper(
+      base_env, NewEncryptedFS(base_env->GetFileSystem(), provider, encryptNewFiles));
 }
 
 // Encrypt one or more (partial) blocks of data at the file offset.
