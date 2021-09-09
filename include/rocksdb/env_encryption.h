@@ -26,7 +26,7 @@ Env* NewEncryptedEnv(Env* base_env,
 
 Env* NewEncryptedEnv(Env* base_env,
                      const std::shared_ptr<EncryptionProvider>& provider,
-                     bool encryptNewFiles);
+                     bool encryptNewFiles, const std::string& dir);
 
 // BlockAccessCipherStream is the base class for any cipher stream that
 // supports random access at block level (without requiring data from other
@@ -107,6 +107,7 @@ class BlockCipher {
 // encryption/decryption actions.
 class EncryptionProvider {
  public:
+  EncryptionProvider() {};
   virtual ~EncryptionProvider(){};
 
   // Creates a new EncryptionProvider from the input config_options and value
@@ -169,6 +170,8 @@ class EncryptionProvider {
   // or not a file is encrypted by this provider.  The maker will also be part
   // of any encryption prefix for this provider.
   virtual std::string GetMarker() const { return ""; }
+
+  virtual Status Feed(Slice& prefix) { return Status::OK(); }
 
  protected:
   // Optional method to initialize an EncryptionProvider in the TEST
@@ -442,6 +445,12 @@ class EncryptedFileSystem : public FileSystemWrapper {
   // otherwise
   virtual Status AddCipher(const std::string& descriptor, const char* cipher,
                            size_t len, bool for_write) = 0;
+
+  virtual Status Init(const std::string dir)
+  {
+    return Status::OK();
+  }
+
 };
 }  // namespace ROCKSDB_NAMESPACE
 

@@ -79,14 +79,38 @@ static constexpr int CRC_OFFSET           = S_UUID_OFFSET + S_UUID_SIZE;
 static constexpr int FILE_KEY_OFFSET      = CRC_OFFSET + CRC_SIZE;
 static constexpr int IV_OFFSET            = FILE_KEY_OFFSET + FILE_KEY_SIZE;
 
+
+/******************************************************************************/
 const char* CTRAesEncryptionProvider::kCTRAesProviderName = "CTRAES";
 
 
 CTRAesEncryptionProvider::CTRAesEncryptionProvider()
-: masterKeyManager_(new MasterKeyManager())  // todo: this should be injected
+: masterKeyManager_(new MasterKeyManager())
+{
+}
+
+CTRAesEncryptionProvider::~CTRAesEncryptionProvider() {
+    
+}
+
+CTRAesEncryptionProvider::CTRAesEncryptionProvider(std::unique_ptr<MasterKeyManager> mmm)
+: masterKeyManager_(mmm.release())
 {
 
 }
+
+Status CTRAesEncryptionProvider::Feed(Slice& prefix)
+{
+    // here we get the whole prefix of the encrypted file
+    uint32_t masterKeyId = 0;
+
+    memcpy(&masterKeyId, prefix.data()+MASTER_KEY_ID_OFFSET, MASTER_KEY_ID_SIZE);
+
+    masterKeyManager_->RegisterMasterKeyId(masterKeyId);
+
+    return Status::OK();
+}
+
 
 const char* CTRAesEncryptionProvider::Name() const
 {
@@ -99,7 +123,7 @@ size_t CTRAesEncryptionProvider::GetPrefixLength() const
 }
 
 /*
-Encryption header:
+Encryption prefix:
  4 bytes		KEY_MAGIC_V1 (e001) 		not encrypted
  4 bytes		master_key_id			not encrypted
 36 bytes		s_uuid				not encrypted

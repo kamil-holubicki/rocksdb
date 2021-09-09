@@ -24,6 +24,7 @@
 #include "util/coding.h"
 #include "util/random.h"
 #include "util/string_util.h"
+#include "file/filename.h"
 
 #endif
 
@@ -712,6 +713,60 @@ class EncryptedFileSystemImpl : public EncryptedFileSystem {
       , encrypt_new_files_(encryptNewFiles) {
   }
 
+  Status Init(const std::string dir) override
+  {
+    IOOptions io_opts;
+    IODebugContext dbg;
+    std::vector<std::string> files;
+
+    if (!GetChildren(dir, io_opts, &files, &dbg).ok()) {
+      return Status::OK();  // if the directory does not exist there are no files
+    }
+
+    uint64_t number = 0;
+    FileType type = kInfoLogFile;
+    for (const std::string& file : files) {
+      if (!ParseFileName(file, &number, &type)) {
+        continue;
+      }
+
+      FeedEncryptionProvider(dir + "/" + file);
+    }
+
+
+    return Status::OK();
+
+  }
+
+  IOStatus FeedEncryptionProvider(const std::string& fname) {
+    rocksdb::EnvOptions soptions;
+    IODebugContext dbg;
+
+    std::unique_ptr<FSSequentialFile> underlying;
+    auto status =
+        FileSystemWrapper::NewSequentialFile(fname, soptions, &underlying, &dbg);
+    if (!status.ok()) {
+      return status;
+    }
+    auto encPrefix = provider_->GetMarker();
+    std::vector<char> buffer;
+    buffer.reserve(provider_->GetPrefixLength());
+    Slice prefix;
+    status = underlying->Read(provider_->GetPrefixLength(), IOOptions(), &prefix, buffer.data(),
+                   nullptr);
+    if (!status.ok()) {
+      return status;
+    }
+    auto encrypted =
+      (encPrefix.compare(0, encPrefix.size(), prefix.data(), encPrefix.size()) == 0);
+
+    if (encrypted) {
+        provider_->Feed(prefix);
+    }
+
+    return status_to_io_status(Status::OK());
+  }
+
   IOStatus IsFileEncrypted(const std::string& fname,
                            bool* result,
                            IODebugContext* dbg) {
@@ -1073,8 +1128,10 @@ std::shared_ptr<FileSystem> NewEncryptedFS(
 std::shared_ptr<FileSystem> NewEncryptedFS(
     const std::shared_ptr<FileSystem>& base,
     const std::shared_ptr<EncryptionProvider>& provider,
-    bool encryptNewFiles) {
-  return std::make_shared<EncryptedFileSystemImpl>(base, provider, encryptNewFiles);
+    bool encryptNewFiles, const std::string& dir) {
+    auto res = std::make_shared<EncryptedFileSystemImpl>(base, provider, encryptNewFiles);
+    res->Init(dir);
+    return res;
 }
 
 // Returns an Env that encrypts data when stored on disk and decrypts data when
@@ -1087,9 +1144,9 @@ Env* NewEncryptedEnv(Env* base_env,
 
 Env* NewEncryptedEnv(Env* base_env,
                      const std::shared_ptr<EncryptionProvider>& provider,
-                     bool encryptNewFiles) {
+                     bool encryptNewFiles, const std::string& dir) {
   return new CompositeEnvWrapper(
-      base_env, NewEncryptedFS(base_env->GetFileSystem(), provider, encryptNewFiles));
+      base_env, NewEncryptedFS(base_env->GetFileSystem(), provider, encryptNewFiles, dir));
 }
 
 // Encrypt one or more (partial) blocks of data at the file offset.

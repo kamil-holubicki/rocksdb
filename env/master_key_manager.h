@@ -9,11 +9,13 @@ namespace ROCKSDB_NAMESPACE {
 class MasterKeyManager {
     public:
         MasterKeyManager();
-        ~MasterKeyManager();
+        virtual ~MasterKeyManager();
 
-        int GetMostRecentMasterKey(std::string *masterKey, uint32_t *masterKeyId);
-        int GetMasterKey(uint32_t masterKeyId, const std::string &suuid, std::string *masterKey);
-        int GetServerUuid(std::string *serverUuid);
+        virtual int GetMostRecentMasterKey(std::string *masterKey, uint32_t *masterKeyId);
+        virtual int GetMasterKey(uint32_t masterKeyId, const std::string &suuid, std::string *masterKey);
+        virtual int GetServerUuid(std::string *serverUuid);
+
+        virtual void RegisterMasterKeyId(uint32_t masterKeyId);
 };
 
 

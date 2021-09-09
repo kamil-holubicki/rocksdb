@@ -67,11 +67,12 @@ class CTRAesEncryptionProvider : public EncryptionProvider {
   // is placed at largest known alignment point for direct io.
   const static size_t defaultPrefixLength = 4096;
 
-  std::shared_ptr<MasterKeyManager> masterKeyManager_;
+  std::unique_ptr<MasterKeyManager> masterKeyManager_;
 
  public:
   explicit CTRAesEncryptionProvider();
-  virtual ~CTRAesEncryptionProvider() {}
+  CTRAesEncryptionProvider(std::unique_ptr<MasterKeyManager> mmm);
+  ~CTRAesEncryptionProvider() override;
 
   static const char* kCTRAesProviderName;
 
@@ -99,6 +100,8 @@ class CTRAesEncryptionProvider : public EncryptionProvider {
                    size_t /*len*/, bool /*for_write*/) override;
 
   std::string GetMarker() const override;
+
+  Status Feed(Slice& prefix) override;
 
  protected:
   Status TEST_Initialize() override;
