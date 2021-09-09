@@ -103,10 +103,11 @@ Status CTRAesEncryptionProvider::Feed(Slice& prefix)
 {
     // here we get the whole prefix of the encrypted file
     uint32_t masterKeyId = 0;
-
     memcpy(&masterKeyId, prefix.data()+MASTER_KEY_ID_OFFSET, MASTER_KEY_ID_SIZE);
 
-    masterKeyManager_->RegisterMasterKeyId(masterKeyId);
+    std::string serverUuid(prefix.data()+S_UUID_OFFSET, S_UUID_SIZE);
+
+    masterKeyManager_->RegisterMasterKeyId(masterKeyId, serverUuid);
 
     return Status::OK();
 }

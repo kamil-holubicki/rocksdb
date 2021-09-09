@@ -15,7 +15,7 @@ class MasterKeyManager {
         virtual int GetMasterKey(uint32_t masterKeyId, const std::string &suuid, std::string *masterKey);
         virtual int GetServerUuid(std::string *serverUuid);
 
-        virtual void RegisterMasterKeyId(uint32_t masterKeyId);
+        virtual void RegisterMasterKeyId(uint32_t masterKeyId, const std::string& serverUuid);
 };
 
 

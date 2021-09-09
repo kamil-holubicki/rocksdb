@@ -26,7 +26,7 @@ int MasterKeyManager::GetMasterKey(uint32_t masterKeyId, const std::string &suui
     return 0;
 }
 
-void MasterKeyManager::RegisterMasterKeyId(uint32_t masterKeyId) {
+void MasterKeyManager::RegisterMasterKeyId(uint32_t masterKeyId, const std::string& serverUuid) {
 }
 
 }  // namespace
