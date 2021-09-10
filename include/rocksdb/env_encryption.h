@@ -19,6 +19,11 @@ class EncryptionProvider;
 
 struct ConfigOptions;
 
+class EncryptedFileSystem;
+
+std::shared_ptr<EncryptedFileSystem> NewEncryptedFS2(
+    const std::shared_ptr<FileSystem>& base,
+    const std::shared_ptr<EncryptionProvider>& provider);
 // Returns an Env that encrypts data when stored on disk and decrypts data when
 // read from disk.
 Env* NewEncryptedEnv(Env* base_env,
@@ -146,6 +151,8 @@ class EncryptionProvider {
   // for a new file.
   virtual Status CreateNewPrefix(const std::string& fname, char* prefix,
                                  size_t prefixLength) const = 0;
+
+  virtual Status ReencryptPrefix(Slice &prefix) const = 0;
 
   // Method to add a new cipher key for use by the EncryptionProvider.
   // @param description  Descriptor for this key.
@@ -446,11 +453,13 @@ class EncryptedFileSystem : public FileSystemWrapper {
   virtual Status AddCipher(const std::string& descriptor, const char* cipher,
                            size_t len, bool for_write) = 0;
 
-  virtual Status Init(const std::string dir)
-  {
+  virtual Status Init(const std::string dir) {
     return Status::OK();
   }
 
+  virtual Status RotateEncryptionMasterKey(const std::string dir) {
+      return Status::OK();
+  }
 };
 }  // namespace ROCKSDB_NAMESPACE
 

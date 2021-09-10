@@ -733,9 +733,63 @@ class EncryptedFileSystemImpl : public EncryptedFileSystem {
       FeedEncryptionProvider(dir + "/" + file);
     }
 
-
     return Status::OK();
+  }
 
+
+  Status RotateFileMasterEncryptionKey(const std::string& fname){
+  rocksdb::EnvOptions soptions;
+    IODebugContext dbg;
+
+    std::unique_ptr<FSRandomRWFile> underlying;
+    auto status =
+        FileSystemWrapper::NewRandomRWFile(fname, soptions, &underlying, &dbg);
+    if (!status.ok()) {
+      return status;
+    }
+    auto encPrefix = provider_->GetMarker();
+    std::vector<char> buffer;
+    buffer.reserve(provider_->GetPrefixLength());
+    Slice prefix;
+    status = underlying->Read(0, provider_->GetPrefixLength(), IOOptions(), &prefix, buffer.data(),
+                   nullptr);
+    if (!status.ok()) {
+      return status;
+    }
+    auto encrypted =
+      (encPrefix.compare(0, encPrefix.size(), prefix.data(), encPrefix.size()) == 0);
+
+    if (encrypted) {
+        provider_->ReencryptPrefix(prefix);
+
+        // now store it back
+        if (status.ok()) {
+          // Write prefix
+          status = underlying->Write(0, prefix, IOOptions(), &dbg);
+        }
+    }
+    return status_to_io_status(Status::OK());
+  }
+
+  Status RotateEncryptionMasterKey(const std::string dir) override {
+    IOOptions io_opts;
+    IODebugContext dbg;
+    std::vector<std::string> files;
+
+    if (!GetChildren(dir, io_opts, &files, &dbg).ok()) {
+      return Status::OK();  // if the directory does not exist there are no files
+    }
+
+    uint64_t number = 0;
+    FileType type = kInfoLogFile;
+    for (const std::string& file : files) {
+      if (!ParseFileName(file, &number, &type)) {
+        continue;
+      }
+
+      RotateFileMasterEncryptionKey(dir + "/" + file);
+    }
+    return Status::OK();
   }
 
   IOStatus FeedEncryptionProvider(const std::string& fname) {
@@ -1119,6 +1173,12 @@ class EncryptedFileSystemImpl : public EncryptedFileSystem {
 };
 }  // namespace
 
+std::shared_ptr<EncryptedFileSystem> NewEncryptedFS2(
+    const std::shared_ptr<FileSystem>& base,
+    const std::shared_ptr<EncryptionProvider>& provider) {
+  return std::make_shared<EncryptedFileSystemImpl>(base, provider);
+}
+
 std::shared_ptr<FileSystem> NewEncryptedFS(
     const std::shared_ptr<FileSystem>& base,
     const std::shared_ptr<EncryptionProvider>& provider) {
@@ -1338,6 +1398,10 @@ static void decodeCTRParameters(const char* prefix, size_t blockSize,
   initialCounter = DecodeFixed64(prefix);
   // Second block contains IV
   iv = Slice(prefix + blockSize, blockSize);
+}
+
+Status CTREncryptionProvider::ReencryptPrefix(Slice &prefix) const {
+    return Status::OK();
 }
 
 // CreateNewPrefix initialized an allocated block of prefix memory

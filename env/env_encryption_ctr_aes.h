@@ -67,11 +67,11 @@ class CTRAesEncryptionProvider : public EncryptionProvider {
   // is placed at largest known alignment point for direct io.
   const static size_t defaultPrefixLength = 4096;
 
-  std::unique_ptr<MasterKeyManager> masterKeyManager_;
+  std::shared_ptr<MasterKeyManager> masterKeyManager_;
 
  public:
   explicit CTRAesEncryptionProvider();
-  CTRAesEncryptionProvider(std::unique_ptr<MasterKeyManager> mmm);
+  CTRAesEncryptionProvider(std::shared_ptr<MasterKeyManager> mmm);
   ~CTRAesEncryptionProvider() override;
 
   static const char* kCTRAesProviderName;
@@ -89,6 +89,8 @@ class CTRAesEncryptionProvider : public EncryptionProvider {
   // for a new file.
   Status CreateNewPrefix(const std::string& fname, char* prefix,
                          size_t prefixLength) const override;
+
+  Status ReencryptPrefix(Slice& prefix) const override;
 
   // CreateCipherStream creates a block access cipher stream for a file given
   // given name and options.

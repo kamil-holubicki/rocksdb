@@ -104,6 +104,8 @@ class CTREncryptionProvider : public EncryptionProvider {
   Status CreateNewPrefix(const std::string& fname, char* prefix,
                          size_t prefixLength) const override;
 
+  Status ReencryptPrefix(Slice& prefix) const override;
+
   // CreateCipherStream creates a block access cipher stream for a file given
   // given name and options.
   Status CreateCipherStream(

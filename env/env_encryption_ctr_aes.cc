@@ -90,11 +90,11 @@ CTRAesEncryptionProvider::CTRAesEncryptionProvider()
 }
 
 CTRAesEncryptionProvider::~CTRAesEncryptionProvider() {
-    
+
 }
 
-CTRAesEncryptionProvider::CTRAesEncryptionProvider(std::unique_ptr<MasterKeyManager> mmm)
-: masterKeyManager_(mmm.release())
+CTRAesEncryptionProvider::CTRAesEncryptionProvider(std::shared_ptr<MasterKeyManager> mmm)
+: masterKeyManager_(mmm)
 {
 
 }
@@ -185,6 +185,50 @@ Status CTRAesEncryptionProvider::CreateNewPrefix(const std::string& fname, char*
   memset((void*)(&prefix[CRC_OFFSET]), 'C', CRC_SIZE);
 #endif
   return Status::OK();
+}
+
+// prefix is encrypted, reencrypt with new master key if needed.
+Status CTRAesEncryptionProvider::ReencryptPrefix(Slice& prefix) const {
+    // todo: introduce GetMostRecentMasterKeyId, to avoid getting it over and
+    // over from keyring component
+    std::string newestMasterKey;
+    uint32_t newestMasterKeyId;
+    masterKeyManager_->GetMostRecentMasterKey(&newestMasterKey, &newestMasterKeyId);
+
+    uint32_t fileMasterKeyId;
+    memcpy(&fileMasterKeyId, prefix.data()+MASTER_KEY_ID_OFFSET, MASTER_KEY_ID_SIZE);
+
+    if(newestMasterKeyId == fileMasterKeyId){
+        return Status::OK();
+    }
+
+    // decrypt the header using old MK
+    std::string suuid(prefix.data()+S_UUID_OFFSET, S_UUID_SIZE);
+    std::string fileMasterKey;
+
+    masterKeyManager_->GetMasterKey(fileMasterKeyId, suuid, &fileMasterKey);
+    unsigned char iv[IV_SIZE] = {0};
+    auto decryptor = Aes_ctr::get_decryptor();
+    decryptor->open((const unsigned char*)fileMasterKey.data(), iv);
+
+    auto data = (unsigned char*)(prefix.data()+FILE_KEY_OFFSET);
+    decryptor->decrypt(data, data, FILE_KEY_SIZE + IV_SIZE);
+
+    // encrypt using the new master key
+    auto encryptor = Aes_ctr::get_encryptor();
+    encryptor->open((const unsigned char*)newestMasterKey.data(), iv);
+
+    encryptor->encrypt(data, data, FILE_KEY_SIZE + IV_SIZE);
+
+    // update CRC
+    // todo: skip calculation for now
+    uint32_t crc = 0xABCDABCD;
+    memcpy((void*)(prefix.data()+CRC_OFFSET), &crc, CRC_SIZE);
+
+    // update MK id
+    memcpy((void*)(prefix.data()+MASTER_KEY_ID_OFFSET), &newestMasterKeyId, MASTER_KEY_ID_SIZE);
+
+    return Status::OK();
 }
 
 Status CTRAesEncryptionProvider::CreateCipherStream(
