@@ -19,19 +19,10 @@ class EncryptionProvider;
 
 struct ConfigOptions;
 
-class EncryptedFileSystem;
-
-std::shared_ptr<EncryptedFileSystem> NewEncryptedFS2(
-    const std::shared_ptr<FileSystem>& base,
-    const std::shared_ptr<EncryptionProvider>& provider);
 // Returns an Env that encrypts data when stored on disk and decrypts data when
 // read from disk.
 Env* NewEncryptedEnv(Env* base_env,
                      const std::shared_ptr<EncryptionProvider>& provider);
-
-Env* NewEncryptedEnv(Env* base_env,
-                     const std::shared_ptr<EncryptionProvider>& provider,
-                     bool encryptNewFiles, const std::string& dir);
 
 // BlockAccessCipherStream is the base class for any cipher stream that
 // supports random access at block level (without requiring data from other
@@ -112,7 +103,6 @@ class BlockCipher {
 // encryption/decryption actions.
 class EncryptionProvider {
  public:
-  EncryptionProvider() {};
   virtual ~EncryptionProvider(){};
 
   // Creates a new EncryptionProvider from the input config_options and value
@@ -152,8 +142,6 @@ class EncryptionProvider {
   virtual Status CreateNewPrefix(const std::string& fname, char* prefix,
                                  size_t prefixLength) const = 0;
 
-  virtual Status ReencryptPrefix(Slice &prefix) const = 0;
-
   // Method to add a new cipher key for use by the EncryptionProvider.
   // @param description  Descriptor for this key.
   // @param cipher       The cryptographic key to use
@@ -177,8 +165,6 @@ class EncryptionProvider {
   // or not a file is encrypted by this provider.  The maker will also be part
   // of any encryption prefix for this provider.
   virtual std::string GetMarker() const { return ""; }
-
-  virtual Status Feed(Slice& prefix) { return Status::OK(); }
 
  protected:
   // Optional method to initialize an EncryptionProvider in the TEST
@@ -452,14 +438,6 @@ class EncryptedFileSystem : public FileSystemWrapper {
   // otherwise
   virtual Status AddCipher(const std::string& descriptor, const char* cipher,
                            size_t len, bool for_write) = 0;
-
-  virtual Status Init(const std::string dir) {
-    return Status::OK();
-  }
-
-  virtual Status RotateEncryptionMasterKey(const std::string dir) {
-      return Status::OK();
-  }
 };
 }  // namespace ROCKSDB_NAMESPACE
 
