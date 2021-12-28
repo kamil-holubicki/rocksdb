@@ -349,6 +349,10 @@ IOStatus EncryptedWritableFile::Close(const IOOptions& options,
   return file_->Close(options, dbg);
 }
 
+bool EncryptedWritableFile::IsSyncThreadSafe() const {
+    return file_->IsSyncThreadSafe();
+}
+
 // A file abstraction for random reading and writing.
 
 // Indicates if the class makes use of direct I/O
